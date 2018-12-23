@@ -1,0 +1,138 @@
+/*creating external table*/
+drop table taxi_ria_combined;
+set hive.mapred.supports.subdirectories=true;
+set hive.input.dir.recursive=true;
+set hive.supports.subdirectories=true;
+set mapreduce.input.fileinputformat.input.dir.recursive=true;
+create external table IF NOT EXISTS taxi_ria_combined (VendorID string,
+tpep_pickup_datetime timestamp, tpep_dropoff_datetime timestamp, Passenger_count int,
+Trip_distance float, RateCodeID int,
+Store_and_fwd_flag string,  PULocationID string, DOLocationID string, 
+Payment_type int, Fare_amount float, Extra float, MTA_tax float,
+Tip_amount  float, Tolls_amount  float, Improvement_surcharge float,
+Total_amount float) ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+location '/user/rianag123_gmail/nyc/'
+TBLPROPERTIES("skip.header.line.count" = "2");
+
+/*creating partitioned table partitioned by month and clustered by pickup location id*/
+drop table ria_part;
+SET hive.exec.max.dynamic.partitions=1000;
+SET hive.exec.max.dynamic.partitions.pernode=1000;
+SET hive.exec.dynamic.partition = true;
+SET hive.exec.dynamic.partition.mode = nonstrict;
+set hive.mapred.supports.subdirectories=true;
+set hive.input.dir.recursive=true;
+set hive.supports.subdirectories=true;
+set mapreduce.input.fileinputformat.input.dir.recursive=true;
+set hive.enforce.bucketing = true;
+create external table IF NOT EXISTS ria_part (VendorID string,
+tpep_pickup_datetime timestamp, tpep_dropoff_datetime timestamp, Passenger_count int,
+Trip_distance float, RateCodeID int,
+Store_and_fwd_flag string,  PULocationID string, DOLocationID string, 
+Payment_type int, Fare_amount float, Extra float, MTA_tax float,
+Tip_amount  float, Tolls_amount  float, Improvement_surcharge float,
+Total_amount float) partitioned by (mnth int) CLUSTERED BY (PULocationID) into 4 buckets
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+location '/user/rianag123_gmail/ria/nyc'
+TBLPROPERTIES("orc.compress"="SNAPPY");
+insert overwrite table ria_part partition (mnth) select *, month(tpep_pickup_datetime) as mnth from taxi_ria_combined;
+
+
+select * from ria_part limit 10;
+/*DATA QUALITY CHECK*/
+/* checking each column */
+Select count(*) as records,count(vendorid) as non_null_records ,vendorid from ria_part group by vendorid;
+/*there are no null values in vendorid column and there are two vendors*/
+Select min(trip_distance) as min_distance, count(*) as records, count(trip_distance) as non_null_records  from ria_part;
+/* minimum trip distance is 0 which is not possible as all taxi rides must have covered some distances*/
+Select count(*) as records, count(ratecodeid) as non_null_records, ratecodeid  from ria_part group by ratecodeid;
+/* ratecodeid of 99 is not possible because as per data dictionary it should range from 1 to 6*/
+Select count(*) as records, count(Store_and_fwd_flag) non_null_records, Store_and_fwd_flag  from ria_part group by Store_and_fwd_flag;
+Select count(*) as records, count(Store_and_fwd_flag) non_null_records, Store_and_fwd_flag  from ria_part group by Store_and_fwd_flag;
+Select count(*) as records,count(PULocationID) as non_null_records from ria_part ;
+Select count(*) as records,count(DOLocationID) as non_null_records from ria_part ;
+Select count(*) as records, count(Payment_type) as non_null_records, Payment_type  from ria_part group by Payment_type;
+Select min(fare_amount) as min_fare, count(fare_amount) as records, count(fare_amount) as non_null_records  from ria_part;
+/*minimum fare distance is a negative value which is not possible*/
+/*issue with “extra” and passenger count column is mentioned below in exploration of those column*/
+Select count(*) as records, count(mta_tax) as non_null_records, mta_tax from ria_part group by mta_tax;
+/*mta  tax should be $0.5 but here there are a number of mta_tax values including negative value that is not possible*/
+Select min(tip_amount) as min_tip, count(tip_amount) as records, count(tip_amount) as non_null_records  from ria_part;
+/* there are negative tip amount values that is not possible*/
+Select min(tolls_amount) as min_toll, count(tolls_amount) as records, count(tolls_amount) as non_null_records  from ria_part;
+/* there are negative toll amount values that is not possible*/
+Select min(total_amount) as min_total, count(total_amount) as records, count(total_amount) as non_null_records  from ria_part;
+/* there are negative total amount values that is not possible*/
+Select count(*) as records, count(Improvement_surcharge) as non_null_records, Improvement_surcharge from ria_part group by Improvement_surcharge;
+/* Improvement_surcharge should be $0.3 but here there are a number of Improvement_surcharge values including negative value that is not possible*/
+Select count(tpep_pickup_datetime) as records, count(tpep_pickup_datetime) as non_null_records  from ria_part;
+Select count(tpep_dropoff_datetime) as records, count(tpep_dropoff_datetime) as non_null_records  from ria_part;
+
+select count(*) from ria_part where (mnth!=11 AND mnth!=12) OR year(tpep_pickup_datetime)!=2017;
+/*315 records are not from November or Dec 2017*/
+
+select count(*) as number_of_records,vendorid from ria_part where (mnth!=11 AND mnth!=12) OR year(tpep_pickup_datetime)!=2017 group by vendorid;
+/*here vendorid 2 is supplying all the erroneous dataset which are not from November or Dec 2017*/
+/*Here we will assume that all data is from 2017 since we have not been asked to clean all the erroneous dataset which are not from November or Dec 2017 and also assume that there are no data quality issues in any of the columns*/
+/* query that summarises the number of records of each provider*/
+ select count(vendorid) as number_of_records,vendorid  from ria_part group by vendorid;
+/*Analysis-I*/
+/*average total fare amount for Dec is $16.186 and fare_amount is $12.94*/
+select avg(total_amount)as total_amount ,avg(fare_amount) as fare_amount from ria_part where mnth=12;
+/*average total fare amount for Nov is $16.488 and fare_amount is $13.14*/
+select avg(total_amount)as total_amount ,avg(fare_amount) as fare_amount from ria_part where mnth=11;
+/*total fare and only the fare amount is higher in Nov than in Dec*/
+/*query to find out  how many trips are made by each level of ‘Passenger_count’.  Most people like to travel solo. There is a data quality issue here since a number of records show more than 6 people and some with 0 people for passenger count which is not possible*/
+select count(*) as number_of_trips,Passenger_count  from ria_part group by Passenger_count order by number_of_trips desc;
+/*query to find the most preferred mode of payment*/
+select count(vendorid) as number_of_records,payment_type  from ria_part group by payment_type order by number_of_records desc;
+/*  most preferred mode of payment is	payment type 1 which is credit card payment*/
+/*tip amount analysis*/
+select avg(tip_amount) as average_tip_amount,percentile_approx(tip_amount, 0.25) as 25th_percentile_tip_amount,percentile_approx(tip_amount, 0.5)as 50th_percentile_tip_amount,percentile_approx(tip_amount, 0.75)as 75th_percentile_tip_amount from ria_part;
+/* average tip amount($1.85) is in-between median($1.35) and 75th percentile tip amount($2.45) so it can be used as a measure of central tendency though it is slightly skewed*. The 25th percentile tip_amount is 0./
+/*query to explore Extra column*/
+select count(*) as total_trips,extra as extra_charge from ria_part group by extra;
+/*only $0.5 and $1 are considered as extra charges as per data dictionary. However we see other values as extra charges as well. Thus there is inconsistencies in the extra column data. Here we will make the assumption that no such inconsistencies in the data. Here number of trips with 0 extra charge is 10109682. Total number of trips is 18793079. Fraction of trips with no extra charge is 0.53.*/
+/*query to find Fraction of trips with no extra charge*/
+select zero_extra / total from (select
+         count(*) as zero_extra from ria_part
+       where extra = 0) t1,
+    (select count(*) as total  from ria_part) t2;
+/* correlation between tip paid and each level of passenger count*/
+
+/* Analysis-II*/
+/* correlation coefficient between passenger_count and tip_amount*/
+select percentile_approx(tip_amount,0.5) as median_tip_amount, Passenger_count  from ria_part group by Passenger_count order by Passenger_count asc;
+select corr(tip_amount,passenger_count) as correlation_coeff from ria_part;
+/*0.004 is correlation coefficient between passenger_count and tip_amount*/
+/* median tip paid by each level of passenger count does not seem to increase with increase in passenger count*/
+select avg(tip_amount) as avg_tip_amount, Passenger_count  from ria_part group by Passenger_count order by Passenger_count asc;
+/*average tip seems to higher when there are more than 6 passengers however when passengers are less than or equal to 6 the average tip amount is almost same as solo travellers.*/
+
+select count(*) as total  from ria_part;
+/*total number of records is 18793079*/
+/*buckets of tip amount in $*/
+select count(tip_amount) *100/18793079,case when tip_amount >= 0 AND tip_amount<5 then 'tip_amount_0_to_5'
+when tip_amount >= 5 AND tip_amount<10 then 'tip_amount_5_to_10'
+when tip_amount >= 10 AND tip_amount<15 then 'tip_amount_10_to_15'
+when tip_amount >= 15 AND tip_amount<20 then 'tip_amount_15_to_20'
+when tip_amount>=20 then 'tip_amount_greater_than_20' ELSE null end as tip_groups from ria_part group by case when tip_amount >= 0 AND tip_amount<5 then 'tip_amount_0_to_5'
+when tip_amount >= 5 AND tip_amount<10 then 'tip_amount_5_to_10'
+when tip_amount >= 10 AND tip_amount<15 then 'tip_amount_10_to_15'
+when tip_amount >= 15 AND tip_amount<20 then 'tip_amount_15_to_20'
+when tip_amount>=20 then 'tip_amount_greater_than_20' ELSE null end;
+/*Percentage of trips with trip amount between 0 to 5 is 92.14%*/
+/*Percentage of trips with trip amount between 5 to 10 is 5.63%*/
+/*Percentage of trips with trip amount between 10 to 15 is  1.88%*/
+/*Percentage of trips with trip amount between 15 to 20 is 0.24%*/
+/*Percentage of trips with trip amount is greater than 20 is 0.10%*/
+/*here the assumption is that we are ignoring the tip values outside these 5 buckets*/
+
+/* finding average speed for each month in miles per hour*/
+select avg(trip_distance/(unix_timestamp(tpep_dropoff_datetime) -unix_timestamp(tpep_pickup_datetime)))*3600 as avg_speed, mnth from ria_part where year(tpep_dropoff_datetime)=2017 group by mnth;
+/*here we will ignore data from months other than Nov and Dec,2017. Average speed in Dec is 12.71 miles/hr and in Nov it is 12.76 miles per hour. Thus Nov has higher averge speed than Dec*/
+/*Average speed was 14.04 miles/hr on 31st Dec,2017*/
+select avg(trip_distance/(unix_timestamp(tpep_dropoff_datetime) -unix_timestamp(tpep_pickup_datetime)))*3600 as avg_speed  from ria_part where day(tpep_pickup_datetime)=31 and mnth=12 and year(tpep_pickup_datetime)=2017;
+/*Average speed was 16.77 miles/hr on 25th Dec,2017*/
+select avg(trip_distance/(unix_timestamp(tpep_dropoff_datetime) -unix_timestamp(tpep_pickup_datetime)))*3600 as avg_speed  from ria_part where day(tpep_pickup_datetime)=25 and mnth=12 and year(tpep_pickup_datetime)=2017;
+/* Average speed for December was less than average speed on 31st Dec and 25th Dec*/
